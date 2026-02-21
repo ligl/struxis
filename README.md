@@ -1,6 +1,6 @@
 # Struxis
 
-Struxis is a standalone Rust trading analysis engine.
+Struxis is evolving into a high-performance quantitative trading system.
 
 It provides a full pipeline:
 
