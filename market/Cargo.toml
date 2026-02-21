@@ -1,0 +1,13 @@
+[package]
+name = "market"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { workspace = true }
+tokio = { workspace = true }
+crossbeam = { workspace = true }
+struxis = { path = "../struxis" }

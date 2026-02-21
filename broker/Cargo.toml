@@ -1,0 +1,17 @@
+[package]
+name = "broker"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { workspace = true }
+market = { path = "../market" }
+struxis = { path = "../struxis" }
+crossbeam = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }

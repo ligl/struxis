@@ -1,0 +1,36 @@
+# Symbol + timeframe SD calibration profile
+# Precedence during resolve:
+# 1) default
+# 2) timeframe (e.g. 5m)
+# 3) symbol (e.g. I2601)
+# 4) symbol_timeframe wildcard (*.5m / I2601.*)
+# 5) symbol_timeframe exact (I2601.5m)
+
+default:
+  layer1_weight: 0.45
+  layer2_weight: 0.30
+  layer3_weight: 0.25
+  stable_threshold: 0.70
+  weakening_threshold: 0.45
+  critical_threshold: 0.25
+  keyzone_bias_scale: 0.35
+
+timeframe:
+  5m:
+    f8_weight: 0.30
+  15m:
+    f8_weight: 0.28
+  1h:
+    f8_weight: 0.22
+
+symbol:
+  I2601:
+    keyzone_bias_scale: 0.45
+
+symbol_timeframe:
+  "*.5m":
+    layer3_weight: 0.30
+  "I2601.*":
+    f1_weight: 0.35
+  "I2601.5m":
+    stable_threshold: 0.55
