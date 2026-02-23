@@ -41,7 +41,7 @@ impl CBarManager {
 
         if self.rows.is_empty() {
             let cbar = self.append_cbar(curr_id, curr_id, curr_high, curr_low);
-            self.detect_last_fractal();
+            self.recompute_fractals();
             self.backtrack_id = first_backtrack_cbar_id(&previous_rows, &self.rows);
             self.rebuild_cache();
             return cbar;
@@ -52,7 +52,7 @@ impl CBarManager {
             self.merge_with_last_if_needed(&last, curr_id, curr_high, curr_low);
 
         let cbar = self.append_cbar(start_id, curr_id, merged_high, merged_low);
-        self.detect_last_fractal();
+        self.recompute_fractals();
         self.backtrack_id = first_backtrack_cbar_id(&previous_rows, &self.rows);
         self.rebuild_cache();
         cbar
@@ -181,16 +181,22 @@ impl CBarManager {
         }
     }
 
-    fn detect_last_fractal(&mut self) {
+    fn recompute_fractals(&mut self) {
+        for row in &mut self.rows {
+            row.fractal_type = FractalType::None;
+        }
+
         if self.rows.len() < 3 {
             return;
         }
-        let length = self.rows.len();
-        let left = self.rows[length - 3].clone();
-        let middle = self.rows[length - 2].clone();
-        let right = self.rows[length - 1].clone();
-        let fractal = Fractal::verify(&left, &middle, &right);
-        self.rows[length - 2].fractal_type = fractal;
+
+        for pivot in 1..(self.rows.len() - 1) {
+            let left = self.rows[pivot - 1].clone();
+            let middle = self.rows[pivot].clone();
+            let right = self.rows[pivot + 1].clone();
+            let fractal = Fractal::verify(&left, &middle, &right);
+            self.rows[pivot].fractal_type = fractal;
+        }
     }
 
     pub(crate) fn last_fractal(&self) -> Option<Fractal> {

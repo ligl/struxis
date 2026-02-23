@@ -15,7 +15,7 @@ use polars::prelude::ParquetWriter;
 use crate::bar::{CBar, Fractal, SBar};
 use crate::constant::{DataError, EventType, Timeframe};
 use crate::events::{EventPayload, Observable, Subscriber};
-use crate::keyzone::KeyZoneSignal;
+use crate::keyzone::{KeyZone, KeyZoneSignal};
 use crate::sd::{SupplyDemandConfig, SupplyDemandResult};
 use crate::swing::Swing;
 use crate::trend::Trend;
@@ -130,6 +130,24 @@ impl MultiTimeframeContext {
         self.managers
             .get(&timeframe)
             .and_then(|m| m.latest_keyzone_signal.as_ref())
+    }
+
+    pub fn get_keyzone_window(&self, timeframe: Timeframe, length: usize) -> Vec<KeyZone> {
+        self.managers
+            .get(&timeframe)
+            .map(|m| {
+                m.keyzone_manager
+                    .rows()
+                    .iter()
+                    .rev()
+                    .take(length)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
     }
 
     pub fn get_swing_window(&self, timeframe: Timeframe, length: usize) -> Vec<Swing> {

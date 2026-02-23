@@ -112,6 +112,12 @@ Supported overlay precedence:
 - `strategy` owns `DecisionEngine` and trade decision orchestration.
 - `runtime/apps` compose market feeds, analysis outputs, and strategy decisions.
 
+## Global Modeling Principle
+
+- Project-wide rule: prioritize professional trader visual semantics over threshold/parameter tuning.
+- Prefer structural relations, state transitions, and sequence constraints; use thresholds only as documented exceptions.
+- This principle applies to all modules, not only `struxis`.
+
 ## Docs
 
 - `docs/rust-migration.md`

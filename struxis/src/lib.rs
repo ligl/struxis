@@ -35,7 +35,7 @@ pub use sd::{
 	SupplyDemand, SupplyDemandConfig, SupplyDemandFactors, SupplyDemandProfileConfig,
 	SupplyDemandResult, SupplyDemandStage,
 };
-pub use swing::{Swing, SwingManager};
+pub use swing::{Swing, SwingManager, SwingState};
 pub use symbol::{Symbol, SymbolLoader, SymbolRegistry};
 pub use tick::{BarWindowAggregator, TickBarAggregator, TickInput};
 pub use trend::{Trend, TrendManager};

@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Struxis KLine Structures</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0b1220;
+      color: #e5e7eb;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+      height: 100vh;
+    }
+    header {
+      padding: 10px 14px;
+      border-bottom: 1px solid #1f2937;
+      background: #0f172a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #cbd5e1;
+      font-size: 13px;
+    }
+    select {
+      background: #0b1220;
+      color: #e5e7eb;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 3px 8px;
+      outline: none;
+    }
+    #meta { color: #93c5fd; font-size: 13px; }
+    #chart {
+      width: 100%;
+      height: calc(100vh - 52px);
+      min-height: 420px;
+      background: #111827;
+      position: relative;
+    }
+    .legend {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      color: #e2e8f0;
+      z-index: 10;
+      min-width: 170px;
+    }
+    .legend-title {
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #93c5fd;
+    }
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 3px 0;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    .legend-row.is-off {
+      opacity: 0.45;
+    }
+    .swatch {
+      width: 16px;
+      height: 0;
+      border-top: 2px solid #64748b;
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+    .swatch-thin { border-top-width: 1px; }
+    .swatch-thick { border-top-width: 3px; }
+    .swatch-dashed {
+      border-top-style: dashed;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+    .cbar-index-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 6;
+      overflow: hidden;
+    }
+    .cbar-index-tag {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      color: #60a5fa;
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 600;
+      text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.7);
+      white-space: nowrap;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div><strong>Struxis 结构叠加图</strong></div>
+  <div class="controls">
+    <label for="tf">周期</label>
+    <select id="tf">
+      <option value="15m">15m</option>
+      <option value="1h">1h</option>
+      <option value="1d">1d</option>
+    </select>
+    <label for="hoverHighlight" style="margin-left:8px;display:flex;align-items:center;gap:4px;">
+      <input id="hoverHighlight" type="checkbox" checked />
+      Hover高亮
+    </label>
+  </div>
+  <div id="meta">loading...</div>
+</header>
+<div id="chart">
+  <div id="cbarIndexLayer" class="cbar-index-layer"></div>
+  <div class="legend">
+    <div class="legend-title">图例</div>
+    <div class="legend-row" data-layer="sbar"><span class="swatch" style="border-top-color:#22c55e"></span><span>SBar 原始K线</span></div>
+    <div class="legend-row" data-layer="cbar"><span class="swatch" style="border-top-color:#94a3b8"></span><span>CBar 连续序列</span></div>
+    <div class="legend-row" data-layer="cbarIndex"><span class="dot" style="background:#60a5fa"></span><span>CBar 序号</span></div>
+    <div class="legend-row" data-layer="swing"><span class="swatch" style="border-top-color:#38bdf8"></span><span>Swing 线（实线=confirmed，虚线=pending，点线=forming）</span></div>
+    <div class="legend-row" data-layer="trend"><span class="swatch swatch-thick" style="border-top-color:#f59e0b"></span><span>Trend 线</span></div>
+    <div class="legend-row" data-layer="keyzone"><span class="swatch swatch-dashed" style="border-top-color:#a78bfa"></span><span>KeyZone 区间线</span></div>
+    <div class="legend-row" data-layer="fractal"><span class="dot" style="background:#f97316"></span><span>CBar分型箭头</span></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+
+<script type="module">
+  const metaEl = document.getElementById('meta');
+  const chartEl = document.getElementById('chart');
+  const cbarIndexLayerEl = document.getElementById('cbarIndexLayer');
+
+  function showFatal(message) {
+    metaEl.textContent = `error: ${message}`;
+    chartEl.innerHTML = `<div style="padding:16px;color:#fca5a5;font-size:14px;line-height:1.5;">${message}</div>`;
+  }
+
+  try {
+    const lw = window.LightweightCharts;
+    if (!lw) {
+      throw new Error('LightweightCharts failed to load from CDN');
+    }
+    const { createChart, CrosshairMode, LineStyle } = lw;
+
+    const params = new URLSearchParams(window.location.search);
+    const tfSelect = document.getElementById('tf');
+    const hoverHighlightEl = document.getElementById('hoverHighlight');
+    const tfToData = {
+      '15m': './kline-structures-data-15m.json',
+      '1h': './kline-structures-data-1h.json',
+      '1d': './kline-structures-data-1d.json',
+    };
+
+    const tf = params.get('tf') || '15m';
+    if (tfToData[tf]) {
+      tfSelect.value = tf;
+    }
+
+    const explicitData = params.get('data');
+    const dataUrl = explicitData || tfToData[tfSelect.value] || tfToData['15m'];
+
+    function readBoolParam(name, defaultValue = true) {
+      const raw = params.get(name);
+      if (raw == null) {
+        return defaultValue;
+      }
+      return raw !== '0';
+    }
+
+    const layerVisibility = {
+      sbar: readBoolParam('sbar', true),
+      cbar: readBoolParam('cbar', true),
+      cbarIndex: readBoolParam('cbarIndex', true),
+      swing: readBoolParam('swing', true),
+      trend: readBoolParam('trend', true),
+      keyzone: readBoolParam('keyzone', true),
+      fractal: readBoolParam('fractal', true),
+    };
+    hoverHighlightEl.checked = readBoolParam('hoverHighlight', true);
+
+    function writeViewerStateToUrl() {
+      const next = new URL(window.location.href);
+      next.searchParams.set('tf', tfSelect.value);
+      next.searchParams.set('hoverHighlight', hoverHighlightEl.checked ? '1' : '0');
+      for (const [layer, visible] of Object.entries(layerVisibility)) {
+        next.searchParams.set(layer, visible ? '1' : '0');
+      }
+      window.history.replaceState(null, '', next.toString());
+    }
+
+    tfSelect.addEventListener('change', () => {
+      const next = new URL(window.location.href);
+      next.searchParams.set('tf', tfSelect.value);
+      next.searchParams.set('hoverHighlight', hoverHighlightEl.checked ? '1' : '0');
+      for (const [layer, visible] of Object.entries(layerVisibility)) {
+        next.searchParams.set(layer, visible ? '1' : '0');
+      }
+      next.searchParams.delete('data');
+      window.location.href = next.toString();
+    });
+
+    let response = await fetch(dataUrl);
+    let fallbackUsed = false;
+    if (!response.ok && dataUrl !== tfToData['15m']) {
+      response = await fetch(tfToData['15m']);
+      fallbackUsed = response.ok;
+    }
+    if (!response.ok) {
+      throw new Error(`failed to fetch ${dataUrl}`);
+    }
+    const payload = await response.json();
+
+    document.getElementById('meta').textContent = `${payload.symbol}.${payload.exchange} | ${payload.timeframe} | bars=${payload.candles.length} cbar=${(payload.cbar_candles||[]).length} swing(confirmed/pending/forming)=${(payload.swing_segments_completed||[]).length}/${(payload.swing_segments_pending||[]).length}/${(payload.swing_segments_forming||[]).length} trend(completed)=${(payload.trend_segments_completed||[]).length} keyzone=${(payload.keyzones||[]).length}${fallbackUsed ? ' | fallback=15m' : ''}`;
+
+    const timeframeText = String(payload.timeframe || '').toLowerCase();
+
+    const realTimes = (payload.candles || []).map(x => Number(x.time)).filter(Number.isFinite);
+    const uniqueRealTimes = Array.from(new Set(realTimes)).sort((a, b) => a - b);
+
+    const realToSynthetic = new Map();
+    const syntheticToReal = new Map();
+    uniqueRealTimes.forEach((t, idx) => {
+      const synthetic = idx + 1;
+      realToSynthetic.set(t, synthetic);
+      syntheticToReal.set(synthetic, t);
+    });
+
+    function nearestSynthetic(realTs) {
+      const t = Number(realTs);
+      if (realToSynthetic.has(t)) {
+        return realToSynthetic.get(t);
+      }
+      if (!uniqueRealTimes.length) {
+        return 1;
+      }
+      let lo = 0;
+      let hi = uniqueRealTimes.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = uniqueRealTimes[mid];
+        if (v === t) {
+          return realToSynthetic.get(v) || 1;
+        }
+        if (v < t) lo = mid + 1;
+        else hi = mid - 1;
+      }
+      const cand = [uniqueRealTimes[Math.max(0, hi)], uniqueRealTimes[Math.min(uniqueRealTimes.length - 1, lo)]]
+        .filter(v => Number.isFinite(v));
+      let best = cand[0];
+      let bestDiff = Math.abs(best - t);
+      for (const c of cand) {
+        const diff = Math.abs(c - t);
+        if (diff < bestDiff) {
+          best = c;
+          bestDiff = diff;
+        }
+      }
+      return realToSynthetic.get(best) || 1;
+    }
+
+    function formatRealTime(unixSec) {
+      const d = new Date((unixSec + 8 * 3600) * 1000);
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      return timeframeText === '1d' ? `${mm}-${dd}` : `${mm}-${dd} ${hh}:${mi}`;
+    }
+
+    const chart = createChart(chartEl, {
+      width: chartEl.clientWidth,
+      height: chartEl.clientHeight,
+      layout: {
+        background: { color: '#111827' },
+        textColor: '#cbd5e1',
+      },
+      grid: {
+        vertLines: { color: '#1f2937' },
+        horzLines: { color: '#1f2937' },
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+      },
+      timeScale: {
+        borderColor: '#334155',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      localization: {
+        tickMarkFormatter: (time) => {
+          const synthetic = Number(time);
+          const real = syntheticToReal.get(synthetic);
+          return real ? formatRealTime(real) : '';
+        },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+      },
+    });
+
+    const candle = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderVisible: false,
+      wickUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+    });
+
+    const candles = (payload.candles || [])
+      .map(x => ({
+        time: nearestSynthetic(x.time),
+        open: Number(x.open),
+        high: Number(x.high),
+        low: Number(x.low),
+        close: Number(x.close),
+      }))
+      .sort((a, b) => a.time - b.time);
+    if (!candles.length) {
+      throw new Error('no candle data in payload');
+    }
+    candle.setData(candles);
+    candle.applyOptions({ visible: layerVisibility.sbar });
+
+    const cbarSeries = chart.addCandlestickSeries({
+      upColor: 'rgba(34,197,94,0.35)',
+      downColor: 'rgba(239,68,68,0.35)',
+      borderUpColor: 'rgba(34,197,94,0.8)',
+      borderDownColor: 'rgba(239,68,68,0.8)',
+      wickUpColor: 'rgba(34,197,94,0.8)',
+      wickDownColor: 'rgba(239,68,68,0.8)',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+
+    const cbarCandles = (payload.cbar_candles || [])
+      .map(x => ({
+        time: nearestSynthetic(x.time),
+        open: Number(x.open),
+        high: Number(x.high),
+        low: Number(x.low),
+        close: Number(x.close),
+      }))
+      .sort((a, b) => a.time - b.time);
+    cbarSeries.setData(cbarCandles);
+    cbarSeries.applyOptions({ visible: layerVisibility.cbar });
+
+    function buildSegmentData(segments, options = {}) {
+      const { connectSegments = false } = options;
+      const sorted = (segments || []).slice().sort((a, b) => {
+        if (a.t0 !== b.t0) return a.t0 - b.t0;
+        return a.t1 - b.t1;
+      });
+
+      if (connectSegments) {
+        const out = [];
+        let cursor = Number.MIN_SAFE_INTEGER;
+        for (const seg of sorted) {
+          let st0 = nearestSynthetic(seg.t0);
+          let st1 = Math.max(st0, nearestSynthetic(seg.t1));
+          const v0 = Number(seg.v0);
+          const v1 = Number(seg.v1);
+
+          if (!out.length) {
+            out.push({ time: st0, value: v0 });
+            cursor = st0;
+          } else {
+            const last = out[out.length - 1];
+            if (st0 > cursor) {
+              out.push({ time: st0, value: v0 });
+              cursor = st0;
+            } else if (st0 === cursor) {
+              if (Math.abs(Number(last.value) - v0) > 1e-9) {
+                st0 = cursor + 1;
+                out.push({ time: st0, value: v0 });
+                cursor = st0;
+              }
+            } else {
+              st0 = cursor + 1;
+              out.push({ time: st0, value: v0 });
+              cursor = st0;
+            }
+          }
+
+          if (st1 <= cursor) {
+            st1 = cursor + 1;
+          }
+          out.push({ time: st1, value: v1 });
+          cursor = st1;
+        }
+        return out;
+      }
+
+      const out = [];
+      let cursor = Number.MIN_SAFE_INTEGER;
+      const pushPoint = (time, value) => {
+        let t = Number(time);
+        if (t <= cursor) {
+          t = cursor + 1;
+        }
+        cursor = t;
+        if (value === undefined) {
+          out.push({ time: t });
+        } else {
+          out.push({ time: t, value: Number(value) });
+        }
+      };
+
+      for (const seg of sorted) {
+        const st0 = nearestSynthetic(seg.t0);
+        const st1 = Math.max(st0, nearestSynthetic(seg.t1));
+        pushPoint(st0, seg.v0);
+        pushPoint(st1, seg.v1);
+        pushPoint(st1, undefined);
+      }
+      return out;
+    }
+
+    const swingSeries = chart.addLineSeries({ color: '#38bdf8', lineWidth: 2 });
+    swingSeries.setData(buildSegmentData(payload.swing_segments_completed, { connectSegments: true }));
+
+    const swingPendingSeries = chart.addLineSeries({
+      color: '#0ea5e9',
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    swingPendingSeries.setData(buildSegmentData(payload.swing_segments_pending || []));
+
+    const swingFormingSeries = chart.addLineSeries({
+      color: '#22d3ee',
+      lineWidth: 2,
+      lineStyle: LineStyle.Dotted,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    swingFormingSeries.setData(buildSegmentData(payload.swing_segments_forming || []));
+
+    const trendSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 3 });
+    trendSeries.setData(buildSegmentData(payload.trend_segments_completed));
+
+    const swingHoverSeries = chart.addLineSeries({
+      color: '#22d3ee',
+      lineWidth: 4,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+
+    const trendHoverSeries = chart.addLineSeries({
+      color: '#fbbf24',
+      lineWidth: 5,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+
+    const keyzoneSeriesPairs = [];
+    for (const zone of (payload.keyzones || [])) {
+      const s0 = nearestSynthetic(zone.t0);
+      const s1 = Math.max(s0, nearestSynthetic(zone.t1));
+
+      const upperSeries = chart.addLineSeries({
+        color: '#a78bfa',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      upperSeries.setData([
+        { time: s0, value: Number(zone.upper) },
+        { time: s1, value: Number(zone.upper) },
+      ]);
+
+      const lowerSeries = chart.addLineSeries({
+        color: '#a78bfa',
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      lowerSeries.setData([
+        { time: s0, value: Number(zone.lower) },
+        { time: s1, value: Number(zone.lower) },
+      ]);
+
+      keyzoneSeriesPairs.push([upperSeries, lowerSeries]);
+    }
+
+    const cbarFractalMarkers = (payload.cbar_fractals || [])
+      .map(x => ({
+        time: nearestSynthetic(x.time),
+        position: x.kind === 'Top' ? 'aboveBar' : 'belowBar',
+        color: x.kind === 'Top' ? '#f97316' : '#84cc16',
+        shape: x.kind === 'Top' ? 'arrowDown' : 'arrowUp',
+        text: '',
+      }))
+      .sort((a, b) => a.time - b.time);
+
+    const cbarIndexById = new Map();
+    for (const row of (payload.cbar_candles || [])) {
+      const id = Number(row.id);
+      if (!Number.isFinite(id)) {
+        continue;
+      }
+      const item = {
+        id,
+        time: nearestSynthetic(row.time),
+        high: Number(row.high),
+        low: Number(row.low),
+      };
+      const prev = cbarIndexById.get(id);
+      if (!prev || item.time >= prev.time) {
+        cbarIndexById.set(id, item);
+      }
+    }
+
+    const cbarIndexPoints = Array.from(cbarIndexById.values())
+      .sort((a, b) => a.time - b.time);
+
+    function buildCbarMarkers() {
+      const out = [];
+      if (layerVisibility.fractal) {
+        out.push(...cbarFractalMarkers);
+      }
+      return out;
+    }
+
+    function renderCbarIndexLabels() {
+      cbarIndexLayerEl.innerHTML = '';
+      if (!layerVisibility.cbarIndex) {
+        return;
+      }
+
+      const logical = chart.timeScale().getVisibleLogicalRange();
+      if (!logical) {
+        return;
+      }
+
+      const from = Math.floor(logical.from) - 1;
+      const to = Math.ceil(logical.to) + 1;
+      const frag = document.createDocumentFragment();
+
+      for (const point of cbarIndexPoints) {
+        if (point.time < from || point.time > to) {
+          continue;
+        }
+
+        const x = chart.timeScale().timeToCoordinate(point.time);
+        const y = cbarSeries.priceToCoordinate(point.high);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          continue;
+        }
+
+        const tag = document.createElement('div');
+        tag.className = 'cbar-index-tag';
+        tag.textContent = String(point.id);
+        tag.style.left = `${x}px`;
+        tag.style.top = `${Math.max(10, y - 2)}px`;
+        frag.appendChild(tag);
+      }
+
+      cbarIndexLayerEl.appendChild(frag);
+    }
+
+    if (typeof cbarSeries.setMarkers === 'function') {
+      cbarSeries.setMarkers(buildCbarMarkers());
+    }
+
+    const legendRows = Array.from(document.querySelectorAll('.legend-row[data-layer]'));
+
+    function applyLayerVisibility() {
+      candle.applyOptions({ visible: layerVisibility.sbar });
+      cbarSeries.applyOptions({ visible: layerVisibility.cbar });
+      swingSeries.applyOptions({ visible: layerVisibility.swing });
+      swingPendingSeries.applyOptions({ visible: layerVisibility.swing });
+      swingFormingSeries.applyOptions({ visible: layerVisibility.swing });
+      trendSeries.applyOptions({ visible: layerVisibility.trend });
+      for (const [upperSeries, lowerSeries] of keyzoneSeriesPairs) {
+        upperSeries.applyOptions({ visible: layerVisibility.keyzone });
+        lowerSeries.applyOptions({ visible: layerVisibility.keyzone });
+      }
+
+      if (!layerVisibility.swing) {
+        swingHoverSeries.setData([]);
+      }
+      if (!layerVisibility.trend) {
+        trendHoverSeries.setData([]);
+      }
+
+      if (typeof cbarSeries.setMarkers === 'function') {
+        cbarSeries.setMarkers(buildCbarMarkers());
+      }
+
+      renderCbarIndexLabels();
+
+      for (const row of legendRows) {
+        const layer = row.dataset.layer;
+        const on = layerVisibility[layer] !== false;
+        row.classList.toggle('is-off', !on);
+      }
+
+      writeViewerStateToUrl();
+    }
+
+    for (const row of legendRows) {
+      row.addEventListener('click', () => {
+        const layer = row.dataset.layer;
+        if (!layer || !(layer in layerVisibility)) {
+          return;
+        }
+        layerVisibility[layer] = !layerVisibility[layer];
+        applyLayerVisibility();
+      });
+    }
+
+    const swingSegmentsSynthetic = (payload.swing_segments_completed || []).map(seg => ({
+      ...seg,
+      s0: nearestSynthetic(seg.t0),
+      s1: Math.max(nearestSynthetic(seg.t0), nearestSynthetic(seg.t1)),
+    }));
+    const trendSegmentsSynthetic = (payload.trend_segments_completed || []).map(seg => ({
+      ...seg,
+      s0: nearestSynthetic(seg.t0),
+      s1: Math.max(nearestSynthetic(seg.t0), nearestSynthetic(seg.t1)),
+    }));
+    const keyzonesSynthetic = (payload.keyzones || []).map(zone => ({
+      ...zone,
+      s0: nearestSynthetic(zone.t0),
+      s1: Math.max(nearestSynthetic(zone.t0), nearestSynthetic(zone.t1)),
+    }));
+
+    function findSegmentAt(segments, t) {
+      for (let i = segments.length - 1; i >= 0; i -= 1) {
+        const seg = segments[i];
+        if (seg.s0 <= t && t <= seg.s1) {
+          return seg;
+        }
+      }
+      return null;
+    }
+
+    function singleSegmentData(seg) {
+      if (!seg) {
+        return [];
+      }
+      return [
+        { time: seg.s0, value: Number(seg.v0) },
+        { time: seg.s1, value: Number(seg.v1) },
+      ];
+    }
+
+    hoverHighlightEl.addEventListener('change', () => {
+      if (!hoverHighlightEl.checked) {
+        swingHoverSeries.setData([]);
+        trendHoverSeries.setData([]);
+      }
+      writeViewerStateToUrl();
+    });
+
+    chart.subscribeCrosshairMove((param) => {
+      const t = typeof param?.time === 'number' ? Number(param.time) : NaN;
+      if (!Number.isFinite(t)) {
+        swingHoverSeries.setData([]);
+        trendHoverSeries.setData([]);
+        return;
+      }
+
+      const hoverSwing = findSegmentAt(swingSegmentsSynthetic, t);
+      const hoverTrend = findSegmentAt(trendSegmentsSynthetic, t);
+      if (hoverHighlightEl.checked) {
+        swingHoverSeries.setData(layerVisibility.swing ? singleSegmentData(hoverSwing) : []);
+        trendHoverSeries.setData(layerVisibility.trend ? singleSegmentData(hoverTrend) : []);
+      } else {
+        swingHoverSeries.setData([]);
+        trendHoverSeries.setData([]);
+      }
+    });
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+      renderCbarIndexLabels();
+    });
+
+    applyLayerVisibility();
+
+    const firstCandle = candles[0].time;
+    const lastCandle = candles[candles.length - 1].time;
+    chart.timeScale().setVisibleRange({
+      from: firstCandle,
+      to: lastCandle,
+    });
+    window.addEventListener('resize', () => {
+      chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+      renderCbarIndexLabels();
+    });
+  } catch (error) {
+    showFatal(error?.message || String(error));
+  }
+</script>
+</body>
+</html>

@@ -6,6 +6,13 @@ use crate::bar::{CBar, Fractal};
 use crate::constant::{Direction, FractalType};
 use crate::utils::{approx_eq_f64, first_changed_id};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwingState {
+    Forming,
+    PendingReverse,
+    Confirmed,
+}
+
 #[derive(Debug, Clone)]
 pub struct Swing {
     pub id: Option<u64>,
@@ -21,6 +28,7 @@ pub struct Swing {
     pub start_oi: f64,
     pub end_oi: f64,
     pub is_completed: bool,
+    pub state: SwingState,
     pub created_at: DateTime<Utc>,
 }
 
@@ -75,6 +83,7 @@ impl SwingManager {
             active.high_price = active.high_price.max(fractal.middle.high_price);
             active.low_price = active.low_price.min(fractal.middle.low_price);
             active.is_completed = true;
+            active.state = SwingState::Confirmed;
         }
 
         let _ = self.append_from_fractal(fractal, right_cbar, false);
@@ -115,19 +124,79 @@ impl SwingManager {
             active.high_price = active.high_price.max(fractal.high_price());
             active.low_price = active.low_price.min(fractal.low_price());
 
-            let prev_completed = self.rows.iter().rev().find(|x| x.is_completed).cloned();
+            let prev_reference_swing = self
+                .rows
+                .iter()
+                .rev()
+                .find(|x| x.state != SwingState::Forming)
+                .cloned();
             let start_fractal = find_fractal_by_middle_id(cbars, active.cbar_start_id);
+            let in_bootstrap_phase = self.rows.len() == 1;
+            let bootstrap_reference_break_ok = if in_bootstrap_phase {
+                start_fractal
+                    .as_ref()
+                    .map(|start| {
+                        end_breaks_start_reference(cbars, start, &fractal, active.direction)
+                    })
+                    .unwrap_or(false)
+            } else {
+                true
+            };
+
+            let pending_prev_index = if self.rows.len() >= 2 {
+                let idx = self.rows.len() - 2;
+                (self.rows[idx].state == SwingState::PendingReverse).then_some(idx)
+            } else {
+                None
+            };
+
+            if let Some(prev_index) = pending_prev_index {
+                let prev_pending = self.rows[prev_index].clone();
+                if should_resume_previous_swing(&prev_pending, &active, &fractal) {
+                    self.rows.pop();
+                    let mut resumed = self.rows[prev_index].clone();
+                    resumed.is_completed = false;
+                    resumed.state = SwingState::Forming;
+                    resumed.cbar_end_id = fractal.right.id.unwrap_or(resumed.cbar_end_id);
+                    resumed.sbar_end_id = fractal.right.sbar_end_id;
+                    resumed.high_price = resumed.high_price.max(fractal.high_price());
+                    resumed.low_price = resumed.low_price.min(fractal.low_price());
+                    self.rows[prev_index] = resumed;
+                    continue;
+                }
+            }
 
             if determine_swing(
                 start_fractal.as_ref(),
                 &fractal,
                 &active,
-                prev_completed.as_ref(),
+                prev_reference_swing.as_ref(),
+                bootstrap_reference_break_ok,
             ) {
-                active.cbar_end_id = fractal.middle.id.unwrap_or(active.cbar_end_id);
-                active.sbar_end_id = fractal.middle.sbar_end_id;
-                active.is_completed = true;
+                let provisional_end_id = fractal.middle.id.unwrap_or(active.cbar_end_id);
+
+                if let Some(end_id) = find_swing_extreme_cbar_id(
+                    cbars,
+                    active.cbar_start_id,
+                    provisional_end_id,
+                    active.direction,
+                ) {
+                    active.cbar_end_id = end_id;
+                } else {
+                    active.cbar_end_id = provisional_end_id;
+                }
+
+                apply_cbar_range_stats(&mut active, cbars);
+                active.is_completed = false;
+                active.state = SwingState::PendingReverse;
                 self.rows[active_index] = active.clone();
+
+                if let Some(prev_index) = pending_prev_index {
+                    let mut confirmed = self.rows[prev_index].clone();
+                    confirmed.state = SwingState::Confirmed;
+                    confirmed.is_completed = true;
+                    self.rows[prev_index] = confirmed;
+                }
 
                 self.id_cursor += 1;
                 let new_active = Swing {
@@ -152,13 +221,21 @@ impl SwingManager {
                     start_oi: 0.0,
                     end_oi: 0.0,
                     is_completed: false,
+                    state: SwingState::Forming,
                     created_at: Utc::now(),
                 };
                 self.rows.push(new_active);
             } else {
+                if in_bootstrap_phase
+                    && should_reanchor_start(start_fractal.as_ref(), &fractal, active.direction)
+                {
+                    active.cbar_start_id = fractal.middle.id.unwrap_or(active.cbar_start_id);
+                    active.sbar_start_id = fractal.middle.sbar_start_id;
+                }
                 active.cbar_end_id = fractal.right.id.unwrap_or(active.cbar_end_id);
-                active.sbar_end_id = fractal.right.sbar_end_id;
+                apply_cbar_range_stats(&mut active, cbars);
                 active.is_completed = false;
+                active.state = SwingState::Forming;
                 self.rows[active_index] = active;
             }
         }
@@ -207,6 +284,11 @@ impl SwingManager {
             start_oi: 0.0,
             end_oi: 0.0,
             is_completed: completed,
+            state: if completed {
+                SwingState::Confirmed
+            } else {
+                SwingState::Forming
+            },
             created_at: Utc::now(),
         };
         self.rows.push(swing.clone());
@@ -264,6 +346,15 @@ impl SwingManager {
         let start_oi: Vec<f64> = self.rows.iter().map(|x| x.start_oi).collect();
         let end_oi: Vec<f64> = self.rows.iter().map(|x| x.end_oi).collect();
         let is_completed: Vec<bool> = self.rows.iter().map(|x| x.is_completed).collect();
+        let state: Vec<i8> = self
+            .rows
+            .iter()
+            .map(|x| match x.state {
+                SwingState::Forming => 0,
+                SwingState::PendingReverse => 1,
+                SwingState::Confirmed => 2,
+            })
+            .collect();
         let created_at: Vec<i64> = self
             .rows
             .iter()
@@ -284,6 +375,7 @@ impl SwingManager {
             "start_oi" => start_oi,
             "end_oi" => end_oi,
             "is_completed" => is_completed,
+            "state" => state,
             "created_at" => created_at
         )
         .expect("failed to rebuild swing dataframe cache");
@@ -302,11 +394,17 @@ impl FractalExt for Fractal {
     }
 
     fn high_price(&self) -> f64 {
-        self.middle.high_price
+        self.left
+            .high_price
+            .max(self.middle.high_price)
+            .max(self.right.high_price)
     }
 
     fn low_price(&self) -> f64 {
-        self.middle.low_price
+        self.left
+            .low_price
+            .min(self.middle.low_price)
+            .min(self.right.low_price)
     }
 }
 
@@ -344,6 +442,7 @@ fn determine_swing(
     end_fractal: &Fractal,
     active_swing: &Swing,
     prev_swing: Option<&Swing>,
+    bootstrap_reference_break_ok: bool,
 ) -> bool {
     let Some(start_fractal) = start_fractal else {
         return false;
@@ -359,6 +458,10 @@ fn determine_swing(
         return false;
     }
 
+    if !bootstrap_reference_break_ok {
+        return false;
+    }
+
     if active_swing.direction == Direction::Up {
         if end_fractal.high_price() < start_fractal.low_price() {
             return false;
@@ -371,13 +474,13 @@ fn determine_swing(
         return true;
     }
 
-    let Some(prev_swing) = prev_swing else {
-        return false;
-    };
-
-    if fractal_overlap(start_fractal, end_fractal, false) {
-        return false;
+    if !fractal_overlap(start_fractal, end_fractal, false) {
+        return true;
     }
+
+    let Some(prev_swing) = prev_swing else {
+        return true;
+    };
 
     let distance = start_fractal
         .high_price()
@@ -397,6 +500,201 @@ fn determine_swing(
     count_between >= 5
 }
 
+fn should_reanchor_start(
+    start_fractal: Option<&Fractal>,
+    current_fractal: &Fractal,
+    direction: Direction,
+) -> bool {
+    let Some(start) = start_fractal else {
+        return false;
+    };
+
+    let start_ft = start.fractal_type();
+    let current_ft = current_fractal.fractal_type();
+    if start_ft == FractalType::None || current_ft == FractalType::None || start_ft != current_ft {
+        return false;
+    }
+
+    match direction {
+        Direction::Down => {
+            current_ft == FractalType::Top && current_fractal.high_price() >= start.high_price()
+        }
+        Direction::Up => {
+            current_ft == FractalType::Bottom && current_fractal.low_price() <= start.low_price()
+        }
+        _ => false,
+    }
+}
+
+fn latest_fractal_before(cbars: &[CBar], before_middle_id: u64, kind: FractalType) -> Option<Fractal> {
+    if cbars.len() < 3 {
+        return None;
+    }
+
+    let mut prev: Option<Fractal> = None;
+    for pivot in 1..cbars.len().saturating_sub(1) {
+        let mid = &cbars[pivot];
+        let Some(mid_id) = mid.id else {
+            continue;
+        };
+        if mid_id >= before_middle_id {
+            break;
+        }
+
+        let fractal = Fractal {
+            left: cbars[pivot - 1].clone(),
+            middle: mid.clone(),
+            right: cbars[pivot + 1].clone(),
+        };
+        if fractal.fractal_type() == kind {
+            prev = Some(fractal);
+        }
+    }
+    prev
+}
+
+fn end_breaks_start_reference(
+    cbars: &[CBar],
+    start_fractal: &Fractal,
+    end_fractal: &Fractal,
+    direction: Direction,
+) -> bool {
+    let end_kind = end_fractal.fractal_type();
+    if end_kind == FractalType::None {
+        return false;
+    }
+
+    let reference_kind = match direction {
+        Direction::Down => FractalType::Bottom,
+        Direction::Up => FractalType::Top,
+        _ => return false,
+    };
+
+    if end_kind != reference_kind {
+        return false;
+    }
+
+    let start_id = start_fractal.middle.id.unwrap_or_default();
+    let Some(reference) = latest_fractal_before(cbars, start_id, reference_kind) else {
+        return false;
+    };
+
+    match direction {
+        Direction::Down => end_fractal.low_price() < reference.low_price(),
+        Direction::Up => end_fractal.high_price() > reference.high_price(),
+        _ => false,
+    }
+}
+
+fn should_resume_previous_swing(prev_pending: &Swing, active: &Swing, fractal: &Fractal) -> bool {
+    if prev_pending.state != SwingState::PendingReverse {
+        return false;
+    }
+    if prev_pending.direction == active.direction {
+        return false;
+    }
+
+    let fractal_type = fractal.fractal_type();
+    match prev_pending.direction {
+        Direction::Down => {
+            fractal_type == FractalType::Bottom
+                && fractal.low_price() < active.low_price
+        }
+        Direction::Up => {
+            fractal_type == FractalType::Top
+                && fractal.high_price() > active.high_price
+        }
+        _ => false,
+    }
+}
+
+fn cbar_by_id(cbars: &[CBar], id: u64) -> Option<&CBar> {
+    cbars.iter().find(|x| x.id == Some(id))
+}
+
+fn cbar_ids_in_range(cbars: &[CBar], start_id: u64, end_id: u64) -> Vec<u64> {
+    let lo = start_id.min(end_id);
+    let hi = start_id.max(end_id);
+    cbars
+        .iter()
+        .filter_map(|x| {
+            let id = x.id?;
+            (lo <= id && id <= hi).then_some(id)
+        })
+        .collect::<Vec<_>>()
+}
+
+fn find_swing_extreme_cbar_id(
+    cbars: &[CBar],
+    start_id: u64,
+    end_id: u64,
+    direction: Direction,
+) -> Option<u64> {
+    let ids = cbar_ids_in_range(cbars, start_id, end_id);
+    if ids.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(&CBar, u64)> = None;
+    for id in ids {
+        let cbar = cbar_by_id(cbars, id)?;
+        best = match best {
+            None => Some((cbar, id)),
+            Some((prev, prev_id)) => {
+                let better = match direction {
+                    Direction::Up => {
+                        cbar.high_price > prev.high_price
+                            || (approx_eq_f64(cbar.high_price, prev.high_price) && id > prev_id)
+                    }
+                    Direction::Down => {
+                        cbar.low_price < prev.low_price
+                            || (approx_eq_f64(cbar.low_price, prev.low_price) && id > prev_id)
+                    }
+                    _ => false,
+                };
+                if better {
+                    Some((cbar, id))
+                } else {
+                    Some((prev, prev_id))
+                }
+            }
+        };
+    }
+    best.map(|(_, id)| id)
+}
+
+fn apply_cbar_range_stats(swing: &mut Swing, cbars: &[CBar]) {
+    let ids = cbar_ids_in_range(cbars, swing.cbar_start_id, swing.cbar_end_id);
+    if ids.is_empty() {
+        return;
+    }
+
+    let mut high = f64::MIN;
+    let mut low = f64::MAX;
+    let mut sbar_start = u64::MAX;
+    let mut sbar_end = 0_u64;
+    for id in ids {
+        if let Some(cbar) = cbar_by_id(cbars, id) {
+            high = high.max(cbar.high_price);
+            low = low.min(cbar.low_price);
+            sbar_start = sbar_start.min(cbar.sbar_start_id);
+            sbar_end = sbar_end.max(cbar.sbar_end_id);
+        }
+    }
+    if sbar_start != u64::MAX {
+        swing.sbar_start_id = sbar_start;
+    }
+    if sbar_end != 0 {
+        swing.sbar_end_id = sbar_end;
+    }
+    if high != f64::MIN {
+        swing.high_price = high;
+    }
+    if low != f64::MAX {
+        swing.low_price = low;
+    }
+}
+
 fn swing_eq_wo_created_at(a: &Swing, b: &Swing) -> bool {
     a.id == b.id
         && a.direction == b.direction
@@ -410,6 +708,73 @@ fn swing_eq_wo_created_at(a: &Swing, b: &Swing) -> bool {
         && approx_eq_f64(a.volume, b.volume)
         && approx_eq_f64(a.start_oi, b.start_oi)
         && approx_eq_f64(a.end_oi, b.end_oi)
+        && a.state == b.state
         && a.is_completed == b.is_completed
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::{fractal_overlap, CBar, Fractal};
+    use crate::constant::FractalType;
+
+    fn cbar(id: u64, high: f64, low: f64) -> CBar {
+        CBar {
+            id: Some(id),
+            sbar_start_id: id,
+            sbar_end_id: id,
+            high_price: high,
+            low_price: low,
+            fractal_type: FractalType::None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn fractal_overlap_uses_full_three_cbar_envelope() {
+        let start = Fractal {
+            left: cbar(1, 120.0, 110.0),
+            middle: cbar(2, 100.0, 90.0),
+            right: cbar(3, 101.0, 91.0),
+        };
+        let end = Fractal {
+            left: cbar(4, 95.0, 85.0),
+            middle: cbar(5, 84.0, 80.0),
+            right: cbar(6, 83.0, 79.0),
+        };
+
+        assert!(
+            fractal_overlap(&start, &end, true),
+            "fractal overlap should use full 3-cbar envelope, not middle bar only"
+        );
+        assert!(
+            fractal_overlap(&start, &end, false),
+            "envelope intersection has positive width in this fixture"
+        );
+    }
+
+    #[test]
+    fn fractal_overlap_distinguishes_touching_from_intersection() {
+        let start = Fractal {
+            left: cbar(1, 120.0, 110.0),
+            middle: cbar(2, 100.0, 90.0),
+            right: cbar(3, 102.0, 92.0),
+        };
+        let end = Fractal {
+            left: cbar(4, 90.0, 80.0),
+            middle: cbar(5, 89.0, 79.0),
+            right: cbar(6, 88.0, 78.0),
+        };
+
+        assert!(
+            fractal_overlap(&start, &end, true),
+            "strict mode should treat boundary touch as overlap"
+        );
+        assert!(
+            !fractal_overlap(&start, &end, false),
+            "non-strict mode should require positive overlap width"
+        );
+    }
 }
 

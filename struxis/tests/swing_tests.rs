@@ -1,6 +1,6 @@
 use chrono::Utc;
 
-use struxis::{Direction, Swing};
+use struxis::{Direction, Swing, SwingState};
 
 fn swing(id: u64, direction: Direction, cbar_start_id: u64, cbar_end_id: u64) -> Swing {
     Swing {
@@ -17,6 +17,7 @@ fn swing(id: u64, direction: Direction, cbar_start_id: u64, cbar_end_id: u64) ->
         start_oi: 1.0,
         end_oi: 1.0,
         is_completed: false,
+        state: SwingState::Forming,
         created_at: Utc::now(),
     }
 }
