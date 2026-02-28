@@ -5,6 +5,7 @@ use polars::prelude::DataFrame;
 use crate::constant::Direction;
 use crate::swing::Swing;
 use crate::utils::{approx_eq_f64, first_changed_id};
+use crate::IdGenerator;
 
 #[derive(Debug, Clone)]
 pub struct Trend {
@@ -147,7 +148,7 @@ impl TrendSfSeq {
 
 pub struct TrendManager {
     rows: Vec<Trend>,
-    id_cursor: u64,
+    id_generator: &'static IdGenerator,
     df_cache: DataFrame,
     backtrack_id: Option<u64>,
     active_sfs: TrendSfSeq,
@@ -164,7 +165,7 @@ impl TrendManager {
     pub fn new() -> Self {
         Self {
             rows: Vec::new(),
-            id_cursor: 0,
+            id_generator: crate::id_generator::trend_id_generator(),
             df_cache: DataFrame::default(),
             backtrack_id: None,
             active_sfs: TrendSfSeq::default(),
@@ -188,11 +189,14 @@ impl TrendManager {
     ) -> Option<u64> {
         let previous_rows = self.rows.clone();
         self.rows.clear();
-        self.id_cursor = 0;
         self.active_sfs.clear();
         self.pullback_sfs.clear();
 
-        let completed: Vec<Swing> = swings.iter().filter(|x| x.is_completed).cloned().collect();
+        let completed: Vec<Swing> = swings
+            .iter()
+            .filter(|x| x.state == crate::swing::SwingState::Confirmed)
+            .cloned()
+            .collect();
         if completed.len() < 3 {
             self.rebuild_cache();
             self.backtrack_id = if swing_backtrack_id.is_some() {
@@ -617,8 +621,7 @@ impl TrendManager {
     }
 
     fn next_id(&mut self) -> u64 {
-        self.id_cursor += 1;
-        self.id_cursor
+        self.id_generator.get_id()
     }
 
     pub fn last_n(&self, n: usize) -> Vec<Trend> {

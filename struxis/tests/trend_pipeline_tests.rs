@@ -85,7 +85,7 @@ fn completed_trend_switch_keeps_opposite_direction_and_contiguous_ids() {
         let left = &pair[0];
         let right = &pair[1];
 
-        if !left.is_completed {
+        if left.state != SwingState::Confirmed {
             continue;
         }
 
@@ -123,7 +123,7 @@ fn controlled_swings_for_switch() -> Vec<Swing> {
             volume: 1.0,
             start_oi: 1.0,
             end_oi: 1.0,
-            is_completed: true,
+            state: SwingState::Confirmed,
             state: SwingState::Confirmed,
             created_at: Utc::now(),
         }

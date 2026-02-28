@@ -16,7 +16,9 @@ members = [
 	"apps/live",
 	"apps/sim",
 	"apps/research",
+	"replay/web",
 ]
+
 
 [workspace.package]
 version = "0.1.0"

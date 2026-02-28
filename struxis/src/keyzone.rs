@@ -10,6 +10,7 @@ use crate::constant::{Direction, KeyZoneOrientation, KeyZoneOrigin, Timeframe};
 use crate::bar::SBar;
 use crate::swing::Swing;
 use crate::trend::Trend;
+use crate::IdGenerator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyZoneState {
@@ -88,7 +89,7 @@ impl KeyZone {
 
 pub struct KeyZoneManager {
     rows: Vec<KeyZone>,
-    id_cursor: u64,
+    id_generator: &'static IdGenerator,
     latest_signal: Option<KeyZoneSignal>,
 }
 
@@ -100,9 +101,13 @@ impl Default for KeyZoneManager {
 
 impl KeyZoneManager {
     pub fn new() -> Self {
+        Self::new_with_generator(crate::id_generator::keyzone_id_generator())
+    }
+
+    pub fn new_with_generator(id_generator: &'static IdGenerator) -> Self {
         Self {
             rows: Vec::new(),
-            id_cursor: 0,
+            id_generator,
             latest_signal: None,
         }
     }
@@ -125,7 +130,7 @@ impl KeyZoneManager {
     }
 
     fn push_zone_from_swing(&mut self, timeframe: Timeframe, swing: &Swing, sbars: &[SBar]) {
-        self.id_cursor += 1;
+        let id = self.id_generator.get_id();
         let (lower, upper, touch_count, last_touch_id) = refine_zone_bounds(
             sbars,
             swing.sbar_start_id,
@@ -135,7 +140,7 @@ impl KeyZoneManager {
             swing.high_price,
         );
         self.rows.push(KeyZone {
-            id: Some(self.id_cursor),
+            id: Some(id),
             timeframe,
             origin_type: KeyZoneOrigin::Swing,
             orientation: KeyZoneOrientation::Horizontal,
@@ -151,7 +156,7 @@ impl KeyZoneManager {
     }
 
     fn push_zone_from_trend(&mut self, timeframe: Timeframe, trend: &Trend, sbars: &[SBar]) {
-        self.id_cursor += 1;
+        let id = self.id_generator.get_id();
         let (lower, upper, touch_count, last_touch_id) = refine_zone_bounds(
             sbars,
             trend.sbar_start_id,
@@ -161,7 +166,7 @@ impl KeyZoneManager {
             trend.high_price,
         );
         self.rows.push(KeyZone {
-            id: Some(self.id_cursor),
+            id: Some(id),
             timeframe,
             origin_type: KeyZoneOrigin::Trend,
             orientation: KeyZoneOrientation::Horizontal,

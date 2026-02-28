@@ -118,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keyzones = mtc.get_keyzone_window(timeframe, 2000);
 
     let mut sbar_time = HashMap::<u64, i64>::new();
-    let mut sbar_rows = Vec::<(u64, i64)>::new();
+    let mut sbar_rows: Vec<(u64, i64)> = Vec::<(u64, i64)>::new();
     let candles = sbars
         .iter()
         .filter_map(|bar| {
@@ -160,17 +160,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let midpoint = (cbar.high_price + cbar.low_price) / 2.0;
-        let cbar_open = prev_cbar_close.unwrap_or(midpoint);
         cbar_candles.push(CBarCandlePoint {
             id: mid_id,
             time: *sbar_ts,
-            open: cbar_open,
+            open: midpoint,
             high: cbar.high_price,
             low: cbar.low_price,
             close: midpoint,
             fractal: fractal_type_label(cbar.fractal_type).to_string(),
         });
-        prev_cbar_close = Some(midpoint);
     }
 
     for cbar in &cbars {

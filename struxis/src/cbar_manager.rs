@@ -9,23 +9,25 @@ use chrono::Utc;
 use polars::df;
 use polars::prelude::DataFrame;
 
-use crate::constant::{Direction, FractalType, Timeframe};
+use crate::IdGenerator;
 use crate::bar::{CBar, Fractal, SBar};
+use crate::constant::{Direction, FractalType, Timeframe};
 use crate::utils::{approx_eq_f64, first_changed_id};
 
 pub(crate) struct CBarManager {
     rows: Vec<CBar>,
-    id_cursor: u64,
+    id_generator: &'static IdGenerator,
     df_cache: DataFrame,
     backtrack_id: Option<u64>,
 }
 
+ 
 impl CBarManager {
     pub(crate) fn new(timeframe: Timeframe) -> Self {
         let _ = timeframe;
         Self {
             rows: Vec::new(),
-            id_cursor: 0,
+            id_generator: crate::id_generator::cbar_id_generator(),
             df_cache: DataFrame::default(),
             backtrack_id: None,
         }
@@ -39,62 +41,82 @@ impl CBarManager {
         let curr_high = sbar.high_price;
         let curr_low = sbar.low_price;
 
-        if self.rows.is_empty() {
-            let cbar = self.append_cbar(curr_id, curr_id, curr_high, curr_low);
-            self.recompute_fractals();
-            self.backtrack_id = first_backtrack_cbar_id(&previous_rows, &self.rows);
-            self.rebuild_cache();
-            return cbar;
-        }
+        // 1. 先插入新cbar
+        let new_cbar = CBar {
+            id: None, // id稍后分配
+            sbar_start_id: curr_id,
+            sbar_end_id: curr_id,
+            high_price: curr_high,
+            low_price: curr_low,
+            fractal_type: crate::constant::FractalType::None,
+            created_at: chrono::Utc::now(),
+        };
+        self.rows.push(new_cbar.clone());
 
-        let last = self.rows.last().cloned().expect("cbar last exists");
-        let (start_id, merged_high, merged_low) =
+        // 2. 使用 helper 进行持续向前合并，直到无包含关系
+        // merge_with_last_if_needed 会弹出被包含的项并返回合并后的 start_id/high/low/created_at
+        let last = self.rows.last().cloned().expect("just pushed");
+        let (start_id, merged_high, merged_low, created_at) =
             self.merge_with_last_if_needed(&last, curr_id, curr_high, curr_low);
 
-        let cbar = self.append_cbar(start_id, curr_id, merged_high, merged_low);
+        // push 合并结果（无论是否真的合并，helper 会弹出原来的条目并返回合并范围）
+        let merged = CBar {
+            id: None,
+            sbar_start_id: start_id,
+            sbar_end_id: curr_id,
+            high_price: merged_high,
+            low_price: merged_low,
+            fractal_type: crate::constant::FractalType::None,
+            created_at,
+        };
+        self.rows.push(merged);
+
+        // 3. 分配id，保证唯一递增
+        for cbar in &mut self.rows {
+            if cbar.id.is_none() {
+                cbar.id = Some(self.id_generator.get_id());
+            }
+        }
+
         self.recompute_fractals();
         self.backtrack_id = first_backtrack_cbar_id(&previous_rows, &self.rows);
         self.rebuild_cache();
-        cbar
+        self.rows.last().cloned().expect("cbar must exist")
     }
 
     fn merge_with_last_if_needed(
         &mut self,
-        last: &CBar,
+        _last: &CBar,
         curr_id: u64,
         curr_high: f64,
         curr_low: f64,
-    ) -> (u64, f64, f64) {
+    ) -> (u64, f64, f64, chrono::DateTime<Utc>) {
         let mut start_id = curr_id;
         let mut merged_high = curr_high;
         let mut merged_low = curr_low;
+        let mut created_at = chrono::Utc::now();
 
-        let direction = self.resolve_direction(last.high_price, curr_high);
-        if is_inclusive(last.high_price, last.low_price, curr_high, curr_low) {
-            start_id = last.sbar_start_id;
-            match direction {
-                Direction::Up => {
-                    merged_high = last.high_price.max(curr_high);
-                    merged_low = last.low_price.max(curr_low);
-                }
-                _ => {
-                    merged_high = last.high_price.min(curr_high);
-                    merged_low = last.low_price.min(curr_low);
-                }
+        // 持续向前合并，直到与前一CBar无包含关系为止
+        loop {
+            if self.rows.is_empty() {
+                break;
             }
-
+            let last = self.rows.last().unwrap().clone();
+            if !is_inclusive(last.high_price, last.low_price, merged_high, merged_low) {
+                break;
+            }
+            start_id = last.sbar_start_id;
+            // 使用被包含项的 created_at（逐步向前覆盖，最终为最早被合并项的 created_at）
+            created_at = last.created_at;
+            // 合并高低点
+            merged_high = merged_high.max(last.high_price);
+            merged_low = merged_low.min(last.low_price);
             self.rows.pop();
-            self.merge_backward_inclusive(
-                direction,
-                &mut start_id,
-                &mut merged_high,
-                &mut merged_low,
-            );
         }
-
-        (start_id, merged_high, merged_low)
+        (start_id, merged_high, merged_low, created_at)
     }
 
+    #[allow(dead_code)]
     fn resolve_direction(&self, last_high: f64, curr_high: f64) -> Direction {
         let hint = self.direction_hint();
         if hint != Direction::None {
@@ -107,6 +129,7 @@ impl CBarManager {
         }
     }
 
+    #[allow(dead_code)]
     fn merge_backward_inclusive(
         &mut self,
         direction: Direction,
@@ -135,14 +158,9 @@ impl CBarManager {
             }
 
             *start_id = prev.sbar_start_id;
-            if direction == Direction::Up {
-                *merged_high = (*merged_high).max(prev.high_price);
-                *merged_low = (*merged_low).max(prev.low_price);
-            } else {
-                *merged_high = (*merged_high).min(prev.high_price);
-                *merged_low = (*merged_low).min(prev.low_price);
-            }
-
+            // 统一使用 high = max(...), low = min(...) 保持合并语义一致
+            *merged_high = (*merged_high).max(prev.high_price);
+            *merged_low = (*merged_low).min(prev.low_price);
             self.rows.pop();
         }
     }
@@ -151,10 +169,10 @@ impl CBarManager {
         self.backtrack_id
     }
 
+    #[allow(dead_code)]
     fn append_cbar(&mut self, start_id: u64, end_id: u64, high_price: f64, low_price: f64) -> CBar {
-        self.id_cursor += 1;
         let cbar = CBar {
-            id: Some(self.id_cursor),
+            id: Some(self.id_generator.get_id()),
             sbar_start_id: start_id,
             sbar_end_id: end_id,
             high_price,
@@ -166,6 +184,7 @@ impl CBarManager {
         cbar
     }
 
+    #[allow(dead_code)]
     fn direction_hint(&self) -> Direction {
         if self.rows.len() < 2 {
             return Direction::None;
@@ -228,7 +247,11 @@ impl CBarManager {
         if Fractal::verify(&left, &middle, &right) == FractalType::None {
             return None;
         }
-        Some(Fractal { left, middle, right })
+        Some(Fractal {
+            left,
+            middle,
+            right,
+        })
     }
 
     pub(crate) fn prev_fractal(&self, id: u64) -> Option<Fractal> {
@@ -241,7 +264,11 @@ impl CBarManager {
             let middle = self.rows[pivot].clone();
             let right = self.rows[pivot + 1].clone();
             if Fractal::verify(&left, &middle, &right) != FractalType::None {
-                return Some(Fractal { left, middle, right });
+                return Some(Fractal {
+                    left,
+                    middle,
+                    right,
+                });
             }
         }
         None
@@ -257,7 +284,11 @@ impl CBarManager {
             let middle = self.rows[pivot].clone();
             let right = self.rows[pivot + 1].clone();
             if Fractal::verify(&left, &middle, &right) != FractalType::None {
-                return Some(Fractal { left, middle, right });
+                return Some(Fractal {
+                    left,
+                    middle,
+                    right,
+                });
             }
         }
         None
@@ -336,4 +367,60 @@ fn cbar_eq_wo_created_at(a: &CBar, b: &CBar) -> bool {
 
 fn is_inclusive(a_high: f64, a_low: f64, b_high: f64, b_low: f64) -> bool {
     (a_high >= b_high && a_low <= b_low) || (a_high <= b_high && a_low >= b_low)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constant::Timeframe;
+    use chrono::Utc;
+
+    fn mk_sbar(id: u64, high: f64, low: f64) -> SBar {
+        SBar {
+            id: Some(id),
+            symbol: "T".to_string(),
+            exchange: "X".to_string(),
+            timeframe: Timeframe::M15,
+            datetime: Utc::now(),
+            open_price: (high + low) / 2.0,
+            high_price: high,
+            low_price: low,
+            close_price: (high + low) / 2.0,
+            volume: 0.0,
+            open_interest: 0.0,
+            turnover: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_multiple_inclusive_merge() {
+        let mut mgr = CBarManager::new(Timeframe::M15);
+
+        // s1 包含 s2，随后 s3 包含合并后的 cbar -> 最终只有一条 cbar
+        let s1 = mk_sbar(1, 10.0, 1.0);
+        let s2 = mk_sbar(2, 9.0, 2.0);
+        let s3 = mk_sbar(3, 12.0, 0.0);
+
+        mgr.on_sbar(&s1);
+        // after first, one cbar exists
+        assert_eq!(mgr.all_rows().len(), 1);
+
+        mgr.on_sbar(&s2);
+        // s1 contains s2 -> merged into one cbar
+        assert_eq!(mgr.all_rows().len(), 1);
+        let c = mgr.all_rows()[0].clone();
+        assert_eq!(c.sbar_start_id, 1);
+        assert_eq!(c.sbar_end_id, 2);
+        assert_eq!(c.high_price, 10.0);
+        assert_eq!(c.low_price, 1.0);
+
+        mgr.on_sbar(&s3);
+        // s3 contains previous merged -> result should be single cbar covering 1..3
+        assert_eq!(mgr.all_rows().len(), 1);
+        let c2 = mgr.all_rows()[0].clone();
+        assert_eq!(c2.sbar_start_id, 1);
+        assert_eq!(c2.sbar_end_id, 3);
+        assert_eq!(c2.high_price, 12.0);
+        assert_eq!(c2.low_price, 0.0);
+    }
 }

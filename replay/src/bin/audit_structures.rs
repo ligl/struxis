@@ -5,6 +5,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 use struxis::{
     DataReceiver, Direction, Fractal, FractalType, MarketBarInput, MultiTimeframeContext, Timeframe,
+        SwingState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -106,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    for s in swings.iter().filter(|x| x.is_completed) {
+    for s in swings.iter().filter(|x| x.state == SwingState::Confirmed) {
         let start_ft = fractal_by_cbar_id
             .get(&s.cbar_start_id)
             .copied()
@@ -161,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cbars.len(),
         swings.len(),
         trends.len(),
-        swings.iter().filter(|x| x.is_completed).count(),
+        swings.iter().filter(|x| x.state == SwingState::Confirmed).count(),
         trends.iter().filter(|x| x.is_completed).count(),
     );
 

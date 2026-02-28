@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SBar vs CBar 比对</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            margin: 12px
+        }
+
+        #controls {
+            margin-bottom: 8px
+        }
+
+        .btn {
+            padding: 6px 10px;
+            margin-right: 6px
+        }
+
+        #chart-sbars,
+        #chart-cbars {
+            position: relative
+        }
+
+        #sbar-overlay {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            height: 0;
+            pointer-events: none
+        }
+        .k-index-layer { position:absolute; inset:0; pointer-events:none; z-index:15; }
+        .k-index-tag { position:absolute; transform:translate(-50%,-0%); color:#60a5fa; font-size:10px; font-weight:600; text-shadow:0 0 2px rgba(0,0,0,0.9); }
+    </style>
+</head>
+
+<body>
+    <h3>SBar vs CBar 比对（简洁版）</h3>
+    <!-- 控件已移除：页面会自动加载数据，如有问题请刷新页面 -->
+
+    <div id="chart-sbars" style="width:100%;height:420px;position:relative">
+        <div id="sbar-overlay" style="position:absolute;left:0;top:0;right:0;height:0;pointer-events:none;z-index:20"></div>
+    </div>
+    <div id="chart-cbars" style="width:100%;height:420px;margin-top:12px"></div>
+
+    <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+        // 仅保留必要功能：加载数据、绘制两张分离图、hover 时高亮对应 SBar 区间
+        async function fetchDefault() {
+            const p = '/dataset/I8888.XDCE_M15_structures.json';
+            try { const r = await fetch(p); if (!r.ok) throw 0; return await r.json(); } catch (e) { console.error('加载数据失败', e); return null }
+        }
+
+        function toLWCCandles(arr) { return (arr || []).map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close })); }
+
+        let currentData = null;
+
+        function createCharts(data) {
+            console.log('创建图表，数据:', data);
+            const lw = window.LightweightCharts; if (!lw) { alert('LightweightCharts 未加载'); return }
+            // 清空容器（稍后重新创建 overlay）
+            const chartSbarsEl = document.getElementById('chart-sbars');
+            const chartCbarsEl = document.getElementById('chart-cbars');
+            chartSbarsEl.innerHTML = '';
+            chartCbarsEl.innerHTML = '';
+
+            const sbarChart = lw.createChart(document.getElementById('chart-sbars'), { width: document.body.clientWidth - 20, height: 420 });
+            const cbarChart = lw.createChart(document.getElementById('chart-cbars'), { width: document.body.clientWidth - 20, height: 420 });
+
+            const sbarSeries = sbarChart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false });
+            const cbarSeries = cbarChart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false });
+
+            const sbars = data.sbars || []; const cbars = data.cbars || [];
+            console.log('SBar count:', sbars.length, 'CBar count:', cbars.length);
+            
+            sbarSeries.setData(toLWCCandles(sbars));
+            cbarSeries.setData(toLWCCandles(cbars));
+
+            // map sbar id -> time (normalize ids to strings) and index map
+            const sbarTime = new Map();
+            const sbarIndex = new Map();
+            const sbarById = new Map();
+            sbars.forEach((s, i) => { const sid = String(s.id); sbarTime.set(sid, s.time); sbarIndex.set(sid, i); sbarById.set(sid, s); });
+
+            // redraw indices on visible range changes and resize (deferred until index layers are created)
+
+            const sbarContainer = chartSbarsEl;
+            // recreate overlay inside sbar container (cleared above)
+            let overlay = document.getElementById('sbar-overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'sbar-overlay';
+                overlay.style.position = 'absolute';
+                overlay.style.left = '0';
+                overlay.style.top = '0';
+                overlay.style.right = '0';
+                overlay.style.height = '0';
+                overlay.style.pointerEvents = 'none';
+                overlay.style.zIndex = '20';
+                sbarContainer.appendChild(overlay);
+            }
+            // ensure overlay matches chart height immediately
+            overlay.style.height = sbarContainer.clientHeight + 'px';
+            // add dedicated index layers (like kline-structures-viewer)
+            let sbarIndexLayer = document.getElementById('sbarIndexLayer');
+            if (!sbarIndexLayer) {
+                sbarIndexLayer = document.createElement('div');
+                sbarIndexLayer.id = 'sbarIndexLayer';
+                sbarIndexLayer.className = 'k-index-layer';
+                sbarContainer.appendChild(sbarIndexLayer);
+            }
+            // small-index labels container (inside overlay)
+            let sbarIndexContainer = document.getElementById('sbar-index-container');
+            if (!sbarIndexContainer) {
+                sbarIndexContainer = document.createElement('div');
+                sbarIndexContainer.id = 'sbar-index-container';
+                sbarIndexContainer.style.position = 'absolute';
+                sbarIndexContainer.style.left = '0';
+                sbarIndexContainer.style.top = '0';
+                sbarIndexContainer.style.right = '0';
+                sbarIndexContainer.style.bottom = '0';
+                sbarIndexContainer.style.pointerEvents = 'none';
+                overlay.appendChild(sbarIndexContainer);
+            }
+            // info box for displaying full SBar/CBar info on hover (floating near mouse via chart point)
+            let infoBox = document.getElementById('sbar-info-box');
+            if (!infoBox) {
+                infoBox = document.createElement('div');
+                infoBox.id = 'sbar-info-box';
+                infoBox.style.position = 'absolute';
+                infoBox.style.padding = '6px 8px';
+                infoBox.style.background = 'rgba(30,30,30,0.9)';
+                infoBox.style.color = '#fff';
+                infoBox.style.fontSize = '12px';
+                infoBox.style.borderRadius = '4px';
+                infoBox.style.pointerEvents = 'none';
+                infoBox.style.transform = 'translate(-50%, -120%)';
+                infoBox.style.whiteSpace = 'normal';
+                infoBox.style.textAlign = 'left';
+                infoBox.style.maxWidth = '360px';
+                infoBox.style.zIndex = '30';
+                infoBox.style.display = 'none';
+                overlay.appendChild(infoBox);
+            }
+            // prepare cbar overlay for index labels
+            let cbarOverlay = document.getElementById('cbar-overlay');
+            if (!cbarOverlay) {
+                cbarOverlay = document.createElement('div');
+                cbarOverlay.id = 'cbar-overlay';
+                cbarOverlay.style.position = 'absolute';
+                cbarOverlay.style.left = '0';
+                cbarOverlay.style.top = '0';
+                cbarOverlay.style.right = '0';
+                cbarOverlay.style.bottom = '0';
+                cbarOverlay.style.pointerEvents = 'none';
+                chartCbarsEl.appendChild(cbarOverlay);
+            }
+            let cbarIndexLayer = document.getElementById('cbarIndexLayer');
+            if (!cbarIndexLayer) {
+                cbarIndexLayer = document.createElement('div');
+                cbarIndexLayer.id = 'cbarIndexLayer';
+                cbarIndexLayer.className = 'k-index-layer';
+                chartCbarsEl.appendChild(cbarIndexLayer);
+            }
+
+            // small CSS for index labels (one-time)
+            if (!document.getElementById('k-index-style')){
+                const s = document.createElement('style'); s.id = 'k-index-style';
+                s.innerHTML = '.k-index-label{position:absolute;pointer-events:none;font-size:10px;color:rgba(0,0,0,0.7);background:rgba(255,255,255,0.8);padding:1px 3px;border-radius:2px;transform:translate(-50%,0);}';
+                document.head.appendChild(s);
+            }
+            // initial render of small indices now that overlays exist
+            try { renderChartIndexLabels(sbars, sbarChart, sbarIndexLayer); } catch(e){}
+            // ensure cbar has its own index container so indices aren't removed when sbar overlay is cleared
+            let cbarIndexContainer = document.getElementById('cbar-index-container');
+            if (!cbarIndexContainer) {
+                cbarIndexContainer = document.createElement('div');
+                cbarIndexContainer.id = 'cbar-index-container';
+                cbarIndexContainer.style.position = 'absolute';
+                cbarIndexContainer.style.left = '0';
+                cbarIndexContainer.style.top = '0';
+                cbarIndexContainer.style.right = '0';
+                cbarIndexContainer.style.bottom = '0';
+                cbarIndexContainer.style.pointerEvents = 'none';
+                cbarOverlay.appendChild(cbarIndexContainer);
+            }
+            try { renderChartIndexLabels(cbars, cbarChart, cbarIndexLayer); } catch(e){}
+
+            // now wire subscriptions to visible range changes and resize
+            try { sbarChart.timeScale().subscribeVisibleTimeRangeChange(() => renderChartIndexLabels(sbars, sbarChart, sbarIndexLayer)); } catch(e){}
+            try { cbarChart.timeScale().subscribeVisibleTimeRangeChange(() => renderChartIndexLabels(cbars, cbarChart, cbarIndexLayer)); } catch(e){}
+            window.addEventListener('resize', () => { try{ renderChartIndexLabels(sbars, sbarChart, sbarIndexLayer); renderChartIndexLabels(cbars, cbarChart, cbarIndexLayer);}catch(e){} });
+            function clearOverlay() {
+                // remove only highlight rectangles, preserve index containers and infoBox
+                overlay.querySelectorAll('.k-highlight').forEach(n=>n.remove());
+                const ib = document.getElementById('sbar-info-box');
+                if (ib) ib.style.display = 'none';
+            }
+
+            function clearIndexLabels(container){ container.innerHTML = ''; }
+
+            function renderChartIndexLabels(arr, chart, layerEl){
+                // 保证 index layer 高度与 chart 容器一致
+                const chartContainer = layerEl.parentElement;
+                if (chartContainer && chartContainer.clientHeight) {
+                    layerEl.style.height = chartContainer.clientHeight + 'px';
+                }
+                layerEl.innerHTML = '';
+                const logical = chart.timeScale().getVisibleLogicalRange();
+                if (!logical) return;
+                const from = Math.floor(logical.from) - 1;
+                const to = Math.ceil(logical.to) + 1;
+                const frag = document.createDocumentFragment();
+                for (let i = 0; i < arr.length; i++) {
+                    const it = arr[i];
+                    const t = Number(it.time);
+                    if (t < from || t > to) continue;
+                    let x = null;
+                    try { x = chart.timeScale().timeToCoordinate(t); } catch (e) { x = null; }
+                    if (!Number.isFinite(x)) continue;
+                    const tag = document.createElement('div');
+                    tag.className = 'k-index-tag';
+                    tag.textContent = String(i);
+                    tag.style.left = Math.round(x) + 'px';
+                    tag.style.top = ((layerEl.clientHeight || 0) - 14) + 'px';
+                    frag.appendChild(tag);
+                }
+                layerEl.appendChild(frag);
+            }
+
+            function highlightRange(startId, endId) {
+                clearOverlay();
+                const t1 = sbarTime.get(startId), t2 = sbarTime.get(endId); if (t1 == null || t2 == null) return;
+                // try using timeToCoordinate for accurate pixel mapping
+                let x1 = null, x2 = null;
+                try {
+                    const ts = sbarChart.timeScale();
+                    if (ts && typeof ts.timeToCoordinate === 'function') {
+                        x1 = ts.timeToCoordinate(t1);
+                        x2 = ts.timeToCoordinate(t2);
+                    }
+                } catch (e) { }
+                const w = sbarContainer.clientWidth;
+                if (x1 == null || x2 == null) {
+                    const vr = sbarChart.timeScale().getVisibleRange(); if (!vr || !vr.from || !vr.to) return;
+                    const from = Number(vr.from), to = Number(vr.to);
+                    x1 = ((t1 - from) / (to - from)) * w;
+                    x2 = ((t2 - from) / (to - from)) * w;
+                }
+                const lx = Math.floor(Math.min(x1, x2));
+                const rx = Math.ceil(Math.max(x1, x2));
+                const left = Math.max(0, lx), right = Math.min(w, rx);
+                const div = document.createElement('div'); div.className = 'k-highlight'; div.style.position = 'absolute'; div.style.left = left + 'px'; div.style.top = '0'; div.style.width = Math.max(2, right - left) + 'px'; div.style.height = sbarContainer.clientHeight + 'px'; div.style.background = 'rgba(255,215,0,0.12)'; div.style.border = '1px solid rgba(255,165,0,0.45)'; overlay.appendChild(div);
+                // update info box content and position
+                const i1 = sbarIndex.get(startId); const i2 = sbarIndex.get(endId);
+                if (i1 != null && i2 != null) {
+                    const startIdx = Math.min(i1, i2); const endIdx = Math.max(i1, i2);
+                    const count = endIdx - startIdx + 1;
+                    const sStart = sbars[startIdx]; const sEnd = sbars[endIdx];
+                    const cbar = cbars.find(c=>String(c.sbar_start_id)===startId && String(c.sbar_end_id)===endId) || {};
+                    const info = [];
+                    info.push('CBar id: ' + (cbar.id ?? '-'));
+                    info.push('SBar range: ' + startId + ' → ' + endId + ' (' + count + ')');
+                    info.push('起 time: ' + (sStart?.time ?? '-'));
+                    info.push('止 time: ' + (sEnd?.time ?? '-'));
+                    if (sStart) info.push('SBar start O:' + sStart.open + ' H:' + sStart.high + ' L:' + sStart.low + ' C:' + sStart.close);
+                    if (endIdx !== startIdx && sEnd) info.push('SBar end   O:' + sEnd.open + ' H:' + sEnd.high + ' L:' + sEnd.low + ' C:' + sEnd.close);
+                    if (cbar.open!=null) info.push('CBar O:' + cbar.open + ' H:' + cbar.high + ' L:' + cbar.low + ' C:' + cbar.close);
+                    function escapeHtml(str){ return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+                    infoBox.innerHTML = info.map(escapeHtml).join('<br>');
+                    const center = left + Math.max(2, right - left)/2;
+                    infoBox.style.left = center + 'px'; infoBox.style.top = '0px';
+                    infoBox.style.display = '';
+                }
+            }
+
+            // hover on cbar chart -> highlight corresponding sbar range
+            const cbarContainer = chartCbarsEl;
+            cbarChart.subscribeCrosshairMove(function (param) {
+                if (!param) { clearOverlay(); return };
+                // prefer seriesData when available
+                let found = null;
+                try {
+                    const sd = param.seriesData && param.seriesData.get(cbarSeries);
+                    if (sd && sd.time != null) {
+                        const tt = (typeof sd.time === 'object' && sd.time.timestamp) ? Number(sd.time.timestamp) : Number(sd.time);
+                        found = cbars.find(c => Number(c.time) === tt);
+                    }
+                } catch (e) { }
+                if (!found && param.time) {
+                    const t = (typeof param.time === 'object' && param.time.timestamp) ? Number(param.time.timestamp) : Number(param.time);
+                    found = cbars.find(c => Number(c.time) === t);
+                }
+                if (!found) { clearOverlay(); return }
+                highlightRange(String(found.sbar_start_id), String(found.sbar_end_id));
+                // position infoBox near mouse using chart point provided by LW
+                if (param.point && typeof param.point.x === 'number') {
+                    const cbarRect = cbarContainer.getBoundingClientRect();
+                    const sbarRect = sbarContainer.getBoundingClientRect();
+                    const globalX = cbarRect.left + param.point.x;
+                    const globalY = cbarRect.top + param.point.y;
+                    const relX = globalX - sbarRect.left;
+                    const relY = globalY - sbarRect.top;
+                    infoBox.style.left = relX + 'px';
+                    infoBox.style.top = Math.max(4, relY - 8) + 'px';
+                    infoBox.style.display = '';
+                }
+            });
+
+            // also support hovering SBAR chart: show info for the single SBar under cursor
+            sbarChart.subscribeCrosshairMove(function(param){
+                if (!param || !param.time) { clearOverlay(); return; }
+                const t = (typeof param.time === 'object' && param.time.timestamp) ? Number(param.time.timestamp) : Number(param.time);
+                // find sbar by time
+                const foundS = sbars.find(s => Number(s.time) === t);
+                if (!foundS) { clearOverlay(); return; }
+                const sid = String(foundS.id);
+                // do not draw a box for the single hovered sbar; clear any existing overlay
+                clearOverlay();
+                // Build SBar-centric info (id, time, index, OHLC) and list containing CBar(s)
+                const idx = sbarIndex.get(sid);
+                const info = [];
+                info.push('SBar id: ' + sid);
+                info.push('time: ' + (foundS.time ?? '-'));
+                if (idx != null) info.push('index: ' + idx);
+                info.push('O:' + foundS.open + ' H:' + foundS.high + ' L:' + foundS.low + ' C:' + foundS.close);
+                // find CBars that include this SBar (by id range)
+                const containing = cbars.filter(c => {
+                    const a = Number(c.sbar_start_id); const b = Number(c.sbar_end_id); const x = Number(sid);
+                    return !Number.isNaN(a) && !Number.isNaN(b) && a <= x && x <= b;
+                });
+                if (containing.length === 0) {
+                    info.push('Belongs to CBar: -');
+                } else {
+                    info.push('Belongs to ' + containing.length + ' CBar(s):');
+                    containing.forEach(c => {
+                        const frag = (c.fractal!=null) ? ('fractal:' + c.fractal) : '';
+                        info.push('  CBar ' + (c.id ?? '-') + ' (' + String(c.sbar_start_id) + '→' + String(c.sbar_end_id) + ')' + (frag?(' ' + frag):''));
+                    });
+                }
+                function escapeHtml(str){ return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+                infoBox.innerHTML = info.map(escapeHtml).join('<br>');
+                // position infoBox near mouse using sbar chart point
+                if (param.point && typeof param.point.x === 'number') {
+                    const sbarRect = sbarContainer.getBoundingClientRect();
+                    const globalX = sbarRect.left + param.point.x;
+                    const globalY = sbarRect.top + param.point.y;
+                    const relX = globalX - sbarRect.left;
+                    const relY = globalY - sbarRect.top;
+                    infoBox.style.left = relX + 'px';
+                    infoBox.style.top = Math.max(4, relY - 8) + 'px';
+                    infoBox.style.display = '';
+                }
+            });
+
+            // 点击或离开时清除
+            cbarChart.subscribeClick(() => clearOverlay());
+            window.addEventListener('resize', () => { sbarChart.applyOptions({ width: document.body.clientWidth - 20 }); cbarChart.applyOptions({ width: document.body.clientWidth - 20 }); overlay.style.height = sbarContainer.clientHeight + 'px'; });
+        }
+
+        // 自动尝试加载一次（不再需要手动加载按钮）
+        (async () => { currentData = await fetchDefault(); if (currentData) createCharts(currentData); else console.warn('未能加载默认数据'); })();
+    </script>
+</body>
+
+</html>

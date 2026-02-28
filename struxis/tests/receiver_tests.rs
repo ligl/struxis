@@ -88,7 +88,7 @@ fn e2e_pipeline_is_deterministic_across_independent_runs() {
                 x.cbar_end_id,
                 x.sbar_start_id,
                 x.sbar_end_id,
-                x.is_completed,
+                x.state == struxis::SwingState::Confirmed,
             )
         })
         .collect::<Vec<_>>();
@@ -102,7 +102,7 @@ fn e2e_pipeline_is_deterministic_across_independent_runs() {
                 x.cbar_end_id,
                 x.sbar_start_id,
                 x.sbar_end_id,
-                x.is_completed,
+                x.state == struxis::SwingState::Confirmed,
             )
         })
         .collect::<Vec<_>>();

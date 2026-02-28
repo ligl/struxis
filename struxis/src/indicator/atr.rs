@@ -3,14 +3,14 @@ use crate::bar::SBar;
 use super::core::Indicator;
 
 #[derive(Debug, Clone)]
-pub struct AtrIndicator {
+pub struct Atr {
     name: String,
     period: usize,
     value: Option<f64>,
     prev_close: Option<f64>,
 }
 
-impl AtrIndicator {
+impl Atr {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "period must be > 0");
         Self {
@@ -32,7 +32,7 @@ impl AtrIndicator {
     }
 }
 
-impl Indicator for AtrIndicator {
+impl Indicator for Atr {
     fn name(&self) -> &str {
         &self.name
     }

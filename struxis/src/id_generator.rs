@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::sync::OnceLock;
+
 const WORKER_ID_BITS: u64 = 10;
 const SEQUENCE_BITS: u64 = 12;
 const MAX_SEQUENCE: u64 = (1 << SEQUENCE_BITS) - 1;
@@ -19,6 +21,45 @@ struct Inner {
 pub struct IdGenerator {
     worker_id: u64,
     inner: Mutex<Inner>,
+}
+
+static GLOBAL_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+
+pub fn global_id_generator() -> &'static IdGenerator {
+    GLOBAL_ID_GENERATOR.get_or_init(|| IdGenerator::new(0))
+}
+
+// Per-structure worker IDs
+const WORKER_SBAR: u64 = 1;
+const WORKER_CBAR: u64 = 2;
+const WORKER_SWING: u64 = 3;
+const WORKER_TREND: u64 = 4;
+const WORKER_KEYZONE: u64 = 5;
+
+static SBAR_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+static CBAR_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+static SWING_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+static TREND_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+static KEYZONE_ID_GENERATOR: OnceLock<IdGenerator> = OnceLock::new();
+
+pub fn sbar_id_generator() -> &'static IdGenerator {
+    SBAR_ID_GENERATOR.get_or_init(|| IdGenerator::new(WORKER_SBAR))
+}
+
+pub fn cbar_id_generator() -> &'static IdGenerator {
+    CBAR_ID_GENERATOR.get_or_init(|| IdGenerator::new(WORKER_CBAR))
+}
+
+pub fn swing_id_generator() -> &'static IdGenerator {
+    SWING_ID_GENERATOR.get_or_init(|| IdGenerator::new(WORKER_SWING))
+}
+
+pub fn trend_id_generator() -> &'static IdGenerator {
+    TREND_ID_GENERATOR.get_or_init(|| IdGenerator::new(WORKER_TREND))
+}
+
+pub fn keyzone_id_generator() -> &'static IdGenerator {
+    KEYZONE_ID_GENERATOR.get_or_init(|| IdGenerator::new(WORKER_KEYZONE))
 }
 
 impl IdGenerator {

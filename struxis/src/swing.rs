@@ -5,6 +5,7 @@ use polars::prelude::DataFrame;
 use crate::bar::{CBar, Fractal};
 use crate::constant::{Direction, FractalType};
 use crate::utils::{approx_eq_f64, first_changed_id};
+use crate::IdGenerator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwingState {
@@ -27,7 +28,6 @@ pub struct Swing {
     pub volume: f64,
     pub start_oi: f64,
     pub end_oi: f64,
-    pub is_completed: bool,
     pub state: SwingState,
     pub created_at: DateTime<Utc>,
 }
@@ -44,7 +44,7 @@ impl Swing {
 
 pub struct SwingManager {
     rows: Vec<Swing>,
-    id_cursor: u64,
+    id_generator: &'static IdGenerator,
     df_cache: DataFrame,
     backtrack_id: Option<u64>,
 }
@@ -59,7 +59,7 @@ impl SwingManager {
     pub fn new() -> Self {
         Self {
             rows: Vec::new(),
-            id_cursor: 0,
+            id_generator: crate::id_generator::swing_id_generator(),
             df_cache: DataFrame::default(),
             backtrack_id: None,
         }
@@ -82,7 +82,6 @@ impl SwingManager {
             active.sbar_end_id = fractal.middle.sbar_end_id;
             active.high_price = active.high_price.max(fractal.middle.high_price);
             active.low_price = active.low_price.min(fractal.middle.low_price);
-            active.is_completed = true;
             active.state = SwingState::Confirmed;
         }
 
@@ -102,8 +101,9 @@ impl SwingManager {
     ) -> Option<u64> {
         let previous_rows = self.rows.clone();
         self.rows.clear();
-        self.id_cursor = 0;
 
+        // 新增：候选终点与后验延伸机制
+        let mut pending_candidate: Option<(usize, Fractal)> = None;
         for pivot in 1..cbars.len().saturating_sub(1) {
             let left = cbars[pivot - 1].clone();
             let middle = cbars[pivot].clone();
@@ -113,6 +113,7 @@ impl SwingManager {
             if fractal_type == FractalType::None {
                 continue;
             }
+
 
             if self.rows.is_empty() {
                 let _ = self.append_from_fractal(&fractal, &fractal.right, false);
@@ -124,13 +125,42 @@ impl SwingManager {
             active.high_price = active.high_price.max(fractal.high_price());
             active.low_price = active.low_price.min(fractal.low_price());
 
+            // --- 修正版：仅重叠时禁止分段，否则允许分段并完成前一 swing ---
+            let start_fractal = find_fractal_by_middle_id(cbars, active.cbar_start_id);
+            let end_fractal = find_fractal_by_middle_id(cbars, active.cbar_end_id);
+            let overlap_with_start = start_fractal.as_ref().map_or(false, |sf| fractal_overlap(sf, &fractal, true));
+            let overlap_with_end = end_fractal.as_ref().map_or(false, |ef| fractal_overlap(ef, &fractal, true));
+            let fractal_type = Fractal::verify(&fractal.left, &fractal.middle, &fractal.right);
+            let direction_match = match active.direction {
+                Direction::Up => fractal_type == FractalType::Top,
+                Direction::Down => fractal_type == FractalType::Bottom,
+                _ => false,
+            };
+            if overlap_with_start || overlap_with_end || !direction_match {
+                // 只延长 active swing 区间，不生成新 swing
+                // 保证终点 fractal id 指向当前 fractal 的 middle（分型点）
+                active.cbar_end_id = fractal.middle.id.unwrap_or(active.cbar_end_id);
+                active.sbar_end_id = fractal.middle.sbar_end_id;
+                active.high_price = active.high_price.max(fractal.high_price());
+                active.low_price = active.low_price.min(fractal.low_price());
+                active.state = SwingState::Forming;
+                self.rows[active_index] = active;
+                continue;
+            } else {
+                // 非重叠且 fractal 类型与方向配对，允许分段，前一 swing 标记为 completed/confirmed
+                let mut completed = active.clone();
+                completed.cbar_end_id = fractal.middle.id.unwrap_or(completed.cbar_end_id);
+                completed.sbar_end_id = fractal.middle.sbar_end_id;
+                completed.state = SwingState::Confirmed;
+                self.rows[active_index] = completed;
+            }
+
             let prev_reference_swing = self
                 .rows
                 .iter()
                 .rev()
                 .find(|x| x.state != SwingState::Forming)
                 .cloned();
-            let start_fractal = find_fractal_by_middle_id(cbars, active.cbar_start_id);
             let in_bootstrap_phase = self.rows.len() == 1;
             let bootstrap_reference_break_ok = if in_bootstrap_phase {
                 start_fractal
@@ -150,18 +180,47 @@ impl SwingManager {
                 None
             };
 
+            // 后验延伸：如果有候选终点，且当前 fractal 突破了候选终点，则延长 swing
+            if let Some((pending_idx, candidate_fractal)) = &pending_candidate {
+                let candidate_ft = candidate_fractal.fractal_type();
+                let candidate_price = match candidate_ft {
+                    FractalType::Top => candidate_fractal.high_price(),
+                    FractalType::Bottom => candidate_fractal.low_price(),
+                    _ => 0.0,
+                };
+                let extend = match candidate_ft {
+                    FractalType::Top => fractal.high_price() > candidate_price,
+                    FractalType::Bottom => fractal.low_price() < candidate_price,
+                    _ => false,
+                };
+                if extend {
+                    // 恢复 swing 为 forming，延长终点
+                    let mut resumed = self.rows[*pending_idx].clone();
+                    resumed.state = SwingState::Forming;
+                    resumed.cbar_end_id = fractal.right.id.unwrap_or(resumed.cbar_end_id);
+                    resumed.sbar_end_id = fractal.right.sbar_end_id;
+                    resumed.high_price = resumed.high_price.max(fractal.high_price());
+                    resumed.low_price = resumed.low_price.min(fractal.low_price());
+                    self.rows[*pending_idx] = resumed;
+                    // 移除候选
+                    self.rows.truncate(*pending_idx + 1);
+                    pending_candidate = None;
+                    continue;
+                }
+            }
+
             if let Some(prev_index) = pending_prev_index {
                 let prev_pending = self.rows[prev_index].clone();
                 if should_resume_previous_swing(&prev_pending, &active, &fractal) {
                     self.rows.pop();
                     let mut resumed = self.rows[prev_index].clone();
-                    resumed.is_completed = false;
                     resumed.state = SwingState::Forming;
                     resumed.cbar_end_id = fractal.right.id.unwrap_or(resumed.cbar_end_id);
                     resumed.sbar_end_id = fractal.right.sbar_end_id;
                     resumed.high_price = resumed.high_price.max(fractal.high_price());
                     resumed.low_price = resumed.low_price.min(fractal.low_price());
                     self.rows[prev_index] = resumed;
+                    pending_candidate = None;
                     continue;
                 }
             }
@@ -187,20 +246,14 @@ impl SwingManager {
                 }
 
                 apply_cbar_range_stats(&mut active, cbars);
-                active.is_completed = false;
                 active.state = SwingState::PendingReverse;
                 self.rows[active_index] = active.clone();
 
-                if let Some(prev_index) = pending_prev_index {
-                    let mut confirmed = self.rows[prev_index].clone();
-                    confirmed.state = SwingState::Confirmed;
-                    confirmed.is_completed = true;
-                    self.rows[prev_index] = confirmed;
-                }
+                // 记录候选终点
+                pending_candidate = Some((active_index, fractal.clone()));
 
-                self.id_cursor += 1;
                 let new_active = Swing {
-                    id: Some(self.id_cursor),
+                    id: Some(self.id_generator.get_id()),
                     direction: active.direction.opposite(),
                     cbar_start_id: active.cbar_end_id,
                     cbar_end_id: fractal.right.id.unwrap_or_default(),
@@ -220,7 +273,6 @@ impl SwingManager {
                     volume: 0.0,
                     start_oi: 0.0,
                     end_oi: 0.0,
-                    is_completed: false,
                     state: SwingState::Forming,
                     created_at: Utc::now(),
                 };
@@ -234,9 +286,15 @@ impl SwingManager {
                 }
                 active.cbar_end_id = fractal.right.id.unwrap_or(active.cbar_end_id);
                 apply_cbar_range_stats(&mut active, cbars);
-                active.is_completed = false;
                 active.state = SwingState::Forming;
                 self.rows[active_index] = active;
+            }
+        }
+
+        // --- 新增：循环结束后将最后一段 forming swing 标记为 confirmed ---
+        if let Some(last) = self.rows.last_mut() {
+            if last.state == SwingState::Forming {
+                last.state = SwingState::Confirmed;
             }
         }
 
@@ -263,7 +321,7 @@ impl SwingManager {
     }
 
     fn append_from_fractal(&mut self, fractal: &Fractal, right_cbar: &CBar, completed: bool) -> Swing {
-        self.id_cursor += 1;
+        let new_id = self.id_generator.get_id();
         let direction = match Fractal::verify(&fractal.left, &fractal.middle, &fractal.right) {
             FractalType::Top => Direction::Down,
             FractalType::Bottom => Direction::Up,
@@ -271,7 +329,7 @@ impl SwingManager {
         };
 
         let swing = Swing {
-            id: Some(self.id_cursor),
+            id: Some(new_id),
             direction,
             cbar_start_id: fractal.middle.id.unwrap_or_default(),
             cbar_end_id: right_cbar.id.unwrap_or_default(),
@@ -283,7 +341,6 @@ impl SwingManager {
             volume: 0.0,
             start_oi: 0.0,
             end_oi: 0.0,
-            is_completed: completed,
             state: if completed {
                 SwingState::Confirmed
             } else {
@@ -345,7 +402,7 @@ impl SwingManager {
         let volume: Vec<f64> = self.rows.iter().map(|x| x.volume).collect();
         let start_oi: Vec<f64> = self.rows.iter().map(|x| x.start_oi).collect();
         let end_oi: Vec<f64> = self.rows.iter().map(|x| x.end_oi).collect();
-        let is_completed: Vec<bool> = self.rows.iter().map(|x| x.is_completed).collect();
+        let is_completed: Vec<bool> = self.rows.iter().map(|x| x.state == SwingState::Confirmed).collect();
         let state: Vec<i8> = self
             .rows
             .iter()
@@ -374,7 +431,7 @@ impl SwingManager {
             "volume" => volume,
             "start_oi" => start_oi,
             "end_oi" => end_oi,
-            "is_completed" => is_completed,
+                "is_completed" => is_completed,
             "state" => state,
             "created_at" => created_at
         )
@@ -709,7 +766,6 @@ fn swing_eq_wo_created_at(a: &Swing, b: &Swing) -> bool {
         && approx_eq_f64(a.start_oi, b.start_oi)
         && approx_eq_f64(a.end_oi, b.end_oi)
         && a.state == b.state
-        && a.is_completed == b.is_completed
 }
 
 #[cfg(test)]

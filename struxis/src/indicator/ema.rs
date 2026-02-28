@@ -3,13 +3,13 @@ use crate::bar::SBar;
 use super::core::Indicator;
 
 #[derive(Debug, Clone)]
-pub struct EmaIndicator {
+pub struct Ema {
     name: String,
     alpha: f64,
     value: Option<f64>,
 }
 
-impl EmaIndicator {
+impl Ema {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "period must be > 0");
         Self {
@@ -20,7 +20,7 @@ impl EmaIndicator {
     }
 }
 
-impl Indicator for EmaIndicator {
+impl Indicator for Ema {
     fn name(&self) -> &str {
         &self.name
     }

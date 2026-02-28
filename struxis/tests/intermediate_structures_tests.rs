@@ -179,7 +179,6 @@ fn controlled_swings() -> Vec<Swing> {
             volume: 1.0,
             start_oi: 1.0,
             end_oi: 1.0,
-            is_completed: true,
             state: SwingState::Confirmed,
             created_at: Utc::now(),
         }

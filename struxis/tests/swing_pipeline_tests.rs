@@ -22,7 +22,10 @@ fn completed_swings_follow_bottom_top_and_top_bottom_contract() {
         .filter_map(|x| x.id.map(|id| (id, x.fractal_type)))
         .collect::<std::collections::HashMap<_, _>>();
 
-    let completed = swings.iter().filter(|x| x.is_completed).collect::<Vec<_>>();
+    let completed = swings
+        .iter()
+        .filter(|x| x.state == struxis::SwingState::Confirmed)
+        .collect::<Vec<_>>();
     assert!(
         !completed.is_empty(),
         "need completed swings to validate swing direction contract"
@@ -151,7 +154,7 @@ fn incremental_append_keeps_completed_swings_directional() {
         mtc.append(Timeframe::M15, bar);
         let swings = mtc.get_swing_window(Timeframe::M15, usize::MAX);
 
-        for swing in swings.into_iter().filter(|x| x.is_completed) {
+        for swing in swings.into_iter().filter(|x| x.state == struxis::SwingState::Confirmed) {
             assert!(
                 matches!(swing.direction, Direction::Up | Direction::Down),
                 "completed swing must have directional state"

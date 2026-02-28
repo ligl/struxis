@@ -135,7 +135,10 @@ fn completed_swings_start_end_on_opposite_fractals() {
         }
     }
 
-    let completed = swings.into_iter().filter(|x| x.is_completed).collect::<Vec<_>>();
+    let completed = swings
+        .into_iter()
+        .filter(|x| x.state == struxis::SwingState::Confirmed)
+        .collect::<Vec<_>>();
     assert!(
         !completed.is_empty(),
         "need completed swings to validate start/end fractal semantics"

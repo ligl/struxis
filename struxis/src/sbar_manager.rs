@@ -7,11 +7,12 @@ use polars::prelude::DataFrame;
 
 use crate::constant::Timeframe;
 use crate::bar::SBar;
+use crate::IdGenerator;
 
 pub(crate) struct SBarManager {
     timeframe: Timeframe,
     rows: Vec<SBar>,
-    id_cursor: u64,
+    id_generator: &'static IdGenerator,
     df_cache: DataFrame,
 }
 
@@ -20,14 +21,13 @@ impl SBarManager {
         Self {
             timeframe,
             rows: Vec::new(),
-            id_cursor: 0,
+            id_generator: crate::id_generator::sbar_id_generator(),
             df_cache: DataFrame::default(),
         }
     }
 
     pub(crate) fn append(&mut self, mut sbar: SBar) -> SBar {
-        self.id_cursor += 1;
-        sbar.id = Some(self.id_cursor);
+        sbar.id = Some(self.id_generator.get_id());
         sbar.timeframe = self.timeframe;
         self.rows.push(sbar.clone());
         let row = df!(
